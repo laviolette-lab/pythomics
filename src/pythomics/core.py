@@ -44,7 +44,7 @@ def load_label_map(path: str | Path) -> np.ndarray:
 
 def summify(image: np.ndarray, block_size: tuple[int, int] = (20, 20)) -> np.ndarray:
     """Sum image pixels in padded, non-overlapping blocks."""
-    arr = np.asarray(image, dtype=np.float32)
+    arr = np.asarray(image)
     if arr.ndim != 2:
         raise ValueError("summify expects a 2-D image")
     if not arr.size:
@@ -52,10 +52,11 @@ def summify(image: np.ndarray, block_size: tuple[int, int] = (20, 20)) -> np.nda
     bh, bw = block_size
     if bh <= 0 or bw <= 0:
         raise ValueError("block_size values must be positive")
-    pad_h, pad_w = (-arr.shape[0]) % bh, (-arr.shape[1]) % bw
-    arr = np.pad(arr, ((0, pad_h), (0, pad_w)), mode="constant")
-    return skimage.measure.block_reduce(arr, block_size=block_size, func=np.sum).astype(
-        np.float32
+    columns = np.add.reduceat(
+        arr, np.arange(0, arr.shape[1], bw), axis=1, dtype=np.float32
+    )
+    return np.add.reduceat(
+        columns, np.arange(0, arr.shape[0], bh), axis=0, dtype=np.float32
     )
 
 
@@ -110,8 +111,8 @@ def calculate_epithelium_features(
         return _empty(columns)
     props = skimage.measure.regionprops_table(
         labeled_epithelium,
-        intensity_image=epithelial_cells.astype(np.uint8),
-        properties=("label", "area", "perimeter"),
+        intensity_image=epithelial_cells,
+        properties=("label", "area", "perimeter", "intensity_mean"),
         extra_properties=[average_thickness],
     )
     frame = pd.DataFrame(props)
@@ -119,16 +120,7 @@ def calculate_epithelium_features(
         calculate_tortuosity(a, p)
         for a, p in zip(frame.area, frame.perimeter, strict=False)
     ]
-    cell_counts = np.bincount(
-        labeled_epithelium.ravel(), weights=epithelial_cells.astype(np.uint8).ravel()
-    )
-    counts = cell_counts[frame.label.to_numpy(dtype=np.int64)]
-    frame["cell_fraction"] = np.divide(
-        counts,
-        frame.area,
-        out=np.zeros_like(counts, dtype=float),
-        where=frame.area.to_numpy() > 0,
-    )
+    frame["cell_fraction"] = frame["intensity_mean"]
     frame = frame.loc[frame.area >= min_area, columns]
     return frame.reset_index(drop=True)
 
