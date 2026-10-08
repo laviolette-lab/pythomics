@@ -21,6 +21,7 @@ DEFAULT_LABELS = {
     "epithelial_cells": 5,
     "stromal_cells": 6,
 }
+DEFAULT_MIN_AREA = 2048
 
 
 def load_label_map(path: str | Path) -> np.ndarray:
@@ -82,7 +83,7 @@ def _empty(columns: list[str]) -> pd.DataFrame:
 
 
 def calculate_lumen_features(
-    labeled_lumen: np.ndarray, min_area: int = 16
+    labeled_lumen: np.ndarray, min_area: int = DEFAULT_MIN_AREA
 ) -> pd.DataFrame:
     columns = ["label", "area", "roundness"]
     if not np.any(labeled_lumen):
@@ -100,7 +101,9 @@ def calculate_lumen_features(
 
 
 def calculate_epithelium_features(
-    labeled_epithelium: np.ndarray, epithelial_cells: np.ndarray, min_area: int = 16
+    labeled_epithelium: np.ndarray,
+    epithelial_cells: np.ndarray,
+    min_area: int = DEFAULT_MIN_AREA,
 ) -> pd.DataFrame:
     columns = ["label", "area", "roundness", "average_thickness", "cell_fraction"]
     if not np.any(labeled_epithelium):
@@ -133,7 +136,7 @@ def calculate_epithelium_features(
 def extract_features(
     label_map: np.ndarray,
     labels: Mapping[str, int] | None = None,
-    min_area: int = 16,
+    min_area: int = DEFAULT_MIN_AREA,
     block_size: tuple[int, int] = (20, 20),
 ) -> tuple[dict[str, np.ndarray], pd.DataFrame, pd.DataFrame]:
     """Calculate density maps and per-object lumen/epithelium measurements.

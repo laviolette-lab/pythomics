@@ -126,6 +126,15 @@ def test_extract_features_filters_small_regions_and_returns_empty_tables():
     ]
 
 
+def test_extract_features_uses_default_minimum_area():
+    labels = np.ones((10, 10), dtype=np.uint8)
+
+    _, lumen, epithelium = core.extract_features(labels)
+
+    assert lumen.empty
+    assert epithelium.empty
+
+
 @pytest.mark.parametrize(
     ("labels", "message"),
     [

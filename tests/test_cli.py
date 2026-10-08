@@ -14,7 +14,7 @@ def test_build_parser_exposes_defaults_and_label_overrides():
 
     assert args.label_map.name == "labels.png"
     assert args.output_dir.name == "pythomics-output"
-    assert args.min_area == 16
+    assert args.min_area == 2048
     assert args.block_size == [2, 3]
     assert args.epithelium_label == 7
     assert args.save_mat is False

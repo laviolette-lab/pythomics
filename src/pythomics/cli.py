@@ -6,7 +6,13 @@ import argparse
 import logging
 from pathlib import Path
 
-from .core import DEFAULT_LABELS, extract_features, load_label_map, save_outputs
+from .core import (
+    DEFAULT_LABELS,
+    DEFAULT_MIN_AREA,
+    extract_features,
+    load_label_map,
+    save_outputs,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-area",
         type=int,
-        default=16,
+        default=DEFAULT_MIN_AREA,
         help="Minimum connected-region area in pixels",
     )
     parser.add_argument(
