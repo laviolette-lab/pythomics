@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import numpy as np
 import pandas as pd
-import scipy.ndimage
 import scipy.io
+import scipy.ndimage
 import skimage.io
 import skimage.measure
 import skimage.morphology
@@ -27,8 +27,12 @@ def load_label_map(path: str | Path) -> np.ndarray:
     """Read a 2-D label map; RGB representations are accepted only if channels match."""
     image = np.asarray(skimage.io.imread(str(path)))
     if image.ndim == 3:
-        if image.shape[-1] not in (3, 4) or not np.all(image[..., :3] == image[..., :1]):
-            raise ValueError("Expected a single-channel integer label map, not a color image")
+        if image.shape[-1] not in (3, 4) or not np.all(
+            image[..., :3] == image[..., :1]
+        ):
+            raise ValueError(
+                "Expected a single-channel integer label map, not a color image"
+            )
         image = image[..., 0]
     if image.ndim != 2:
         raise ValueError(f"Expected a 2-D label map, got shape {image.shape}")
@@ -49,7 +53,9 @@ def summify(image: np.ndarray, block_size: tuple[int, int] = (20, 20)) -> np.nda
         raise ValueError("block_size values must be positive")
     pad_h, pad_w = (-arr.shape[0]) % bh, (-arr.shape[1]) % bw
     arr = np.pad(arr, ((0, pad_h), (0, pad_w)), mode="constant")
-    return skimage.measure.block_reduce(arr, block_size=block_size, func=np.sum).astype(np.float32)
+    return skimage.measure.block_reduce(arr, block_size=block_size, func=np.sum).astype(
+        np.float32
+    )
 
 
 def calculate_tortuosity(area: float, perimeter: float) -> float:
@@ -75,13 +81,19 @@ def _empty(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns)
 
 
-def calculate_lumen_features(labeled_lumen: np.ndarray, min_area: int = 16) -> pd.DataFrame:
+def calculate_lumen_features(
+    labeled_lumen: np.ndarray, min_area: int = 16
+) -> pd.DataFrame:
     columns = ["label", "area", "roundness"]
     if not np.any(labeled_lumen):
         return _empty(columns)
-    props = skimage.measure.regionprops_table(labeled_lumen, properties=("label", "area", "perimeter"))
+    props = skimage.measure.regionprops_table(
+        labeled_lumen, properties=("label", "area", "perimeter")
+    )
     frame = pd.DataFrame(props)
-    frame["roundness"] = [calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter)]
+    frame["roundness"] = [
+        calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter, strict=False)
+    ]
     frame = frame.loc[frame.area >= min_area, columns]
     return frame.reset_index(drop=True)
 
@@ -99,12 +111,19 @@ def calculate_epithelium_features(
         extra_properties=[average_thickness],
     )
     frame = pd.DataFrame(props)
-    frame["roundness"] = [calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter)]
+    frame["roundness"] = [
+        calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter, strict=False)
+    ]
     cell_counts = np.bincount(
         labeled_epithelium.ravel(), weights=epithelial_cells.astype(np.uint8).ravel()
     )
     counts = cell_counts[frame.label.to_numpy(dtype=np.int64)]
-    frame["cell_fraction"] = np.divide(counts, frame.area, out=np.zeros_like(counts, dtype=float), where=frame.area.to_numpy() > 0)
+    frame["cell_fraction"] = np.divide(
+        counts,
+        frame.area,
+        out=np.zeros_like(counts, dtype=float),
+        where=frame.area.to_numpy() > 0,
+    )
     frame = frame.loc[frame.area >= min_area, columns]
     return frame.reset_index(drop=True)
 
@@ -135,7 +154,9 @@ def extract_features(
     lumen = palette == label_values["lumen"]
     epithelial_cells = palette == label_values["epithelial_cells"]
     epithelium = (palette == label_values["epithelium"]) | epithelial_cells
-    stroma = (palette == label_values["stroma"]) | (palette == label_values["stromal_cells"])
+    stroma = (palette == label_values["stroma"]) | (
+        palette == label_values["stromal_cells"]
+    )
 
     densities = {
         "lumen_density": summify(lumen, block_size),
@@ -146,12 +167,20 @@ def extract_features(
     labeled_lumen = scipy.ndimage.label(lumen)[0]
     labeled_epithelium = scipy.ndimage.label(epithelium)[0]
     lumen_features = calculate_lumen_features(labeled_lumen, min_area)
-    epithelium_features = calculate_epithelium_features(labeled_epithelium, epithelial_cells, min_area)
-    logging.info("Found %d lumens and %d epithelial regions", len(lumen_features), len(epithelium_features))
+    epithelium_features = calculate_epithelium_features(
+        labeled_epithelium, epithelial_cells, min_area
+    )
+    logging.info(
+        "Found %d lumens and %d epithelial regions",
+        len(lumen_features),
+        len(epithelium_features),
+    )
     return densities, lumen_features, epithelium_features
 
 
-def _paint_features(labeled: np.ndarray, features: pd.DataFrame, column: str) -> np.ndarray:
+def _paint_features(
+    labeled: np.ndarray, features: pd.DataFrame, column: str
+) -> np.ndarray:
     if column not in features.columns:
         raise ValueError(f"Feature column {column!r} not found")
     max_label = int(labeled.max()) if labeled.size else 0
@@ -194,17 +223,29 @@ def save_outputs(
     labeled_lumen = scipy.ndimage.label(lumen)[0]
     labeled_epithelium = scipy.ndimage.label(epithelium)[0]
     maps = {
-        **{key: summify(mask, block_size) for key, mask in {
-            "lumen_density": lumen,
-            "stroma_density": (label_map == values["stroma"]) | (label_map == values["stromal_cells"]),
-            "epithelium_density": epithelium,
-            "epithelial_cells_density": epithelial_cells,
-        }.items()},
+        **{
+            key: summify(mask, block_size)
+            for key, mask in {
+                "lumen_density": lumen,
+                "stroma_density": (label_map == values["stroma"])
+                | (label_map == values["stromal_cells"]),
+                "epithelium_density": epithelium,
+                "epithelial_cells_density": epithelial_cells,
+            }.items()
+        },
         "lumen_roundness": _paint_features(labeled_lumen, lumen_features, "roundness"),
         "lumen_area": _paint_features(labeled_lumen, lumen_features, "area"),
-        "epithelium_roundness": _paint_features(labeled_epithelium, epithelium_features, "roundness"),
-        "epithelium_area": _paint_features(labeled_epithelium, epithelium_features, "area"),
-        "epithelium_thickness": _paint_features(labeled_epithelium, epithelium_features, "average_thickness"),
-        "cell_fraction": _paint_features(labeled_epithelium, epithelium_features, "cell_fraction"),
+        "epithelium_roundness": _paint_features(
+            labeled_epithelium, epithelium_features, "roundness"
+        ),
+        "epithelium_area": _paint_features(
+            labeled_epithelium, epithelium_features, "area"
+        ),
+        "epithelium_thickness": _paint_features(
+            labeled_epithelium, epithelium_features, "average_thickness"
+        ),
+        "cell_fraction": _paint_features(
+            labeled_epithelium, epithelium_features, "cell_fraction"
+        ),
     }
     scipy.io.savemat(output / f"{stem}_features.mat", maps)

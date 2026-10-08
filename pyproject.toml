@@ -68,7 +68,7 @@ dependencies = ["ruff>=0.4.0"]
 check = "ruff check src tests"
 format = "ruff format src tests"
 format-check = "ruff format src tests --check"
-fix = "ruff check --fix src tests"
+fix = "ruff check --fix --unsafe-fixes src tests"
 all = ["format", "fix", "check"]
 
 [tool.hatch.envs.types]

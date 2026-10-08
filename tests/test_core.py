@@ -95,7 +95,9 @@ def test_extract_features_counts_combined_tissues_and_calculates_objects():
 
     np.testing.assert_array_equal(densities["lumen_density"], [[4, 0], [0, 0]])
     np.testing.assert_array_equal(densities["epithelium_density"], [[0, 4], [0, 0]])
-    np.testing.assert_array_equal(densities["epithelial_cells_density"], [[0, 1], [0, 0]])
+    np.testing.assert_array_equal(
+        densities["epithelial_cells_density"], [[0, 1], [0, 0]]
+    )
     np.testing.assert_array_equal(densities["stroma_density"], [[0, 0], [5, 0]])
     assert lumen[["area", "roundness"]].to_dict("records") == [
         {"area": 4, "roundness": 1.0}
@@ -176,7 +178,9 @@ def test_save_outputs_writes_csv_density_and_optional_mat_files(tmp_path):
     assert pd.read_csv(output / "sample_lumen_features.csv")["area"].tolist() == [4]
     assert pd.read_csv(output / "sample_epithelium_features.csv").empty
     with np.load(output / "sample_densities.npz") as saved:
-        np.testing.assert_array_equal(saved["lumen_density"], densities["lumen_density"])
+        np.testing.assert_array_equal(
+            saved["lumen_density"], densities["lumen_density"]
+        )
     assert not (output / "sample_features.mat").exists()
 
     core.save_outputs(

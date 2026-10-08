@@ -28,19 +28,22 @@ def test_main_writes_feature_outputs_for_input_image(tmp_path):
     skimage.io.imsave(image, labels, check_contrast=False)
     output = tmp_path / "features"
 
-    assert cli.main(
-        [
-            str(image),
-            "--output-dir",
-            str(output),
-            "--min-area",
-            "1",
-            "--block-size",
-            "2",
-            "2",
-            "--save-mat",
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                str(image),
+                "--output-dir",
+                str(output),
+                "--min-area",
+                "1",
+                "--block-size",
+                "2",
+                "2",
+                "--save-mat",
+            ]
+        )
+        == 0
+    )
 
     assert (output / "labels_lumen_features.csv").is_file()
     assert (output / "labels_epithelium_features.csv").is_file()
