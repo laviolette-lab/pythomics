@@ -92,7 +92,8 @@ def calculate_lumen_features(
     )
     frame = pd.DataFrame(props)
     frame["roundness"] = [
-        calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter, strict=False)
+        calculate_tortuosity(a, p)
+        for a, p in zip(frame.area, frame.perimeter, strict=False)
     ]
     frame = frame.loc[frame.area >= min_area, columns]
     return frame.reset_index(drop=True)
@@ -112,7 +113,8 @@ def calculate_epithelium_features(
     )
     frame = pd.DataFrame(props)
     frame["roundness"] = [
-        calculate_tortuosity(a, p) for a, p in zip(frame.area, frame.perimeter, strict=False)
+        calculate_tortuosity(a, p)
+        for a, p in zip(frame.area, frame.perimeter, strict=False)
     ]
     cell_counts = np.bincount(
         labeled_epithelium.ravel(), weights=epithelial_cells.astype(np.uint8).ravel()
