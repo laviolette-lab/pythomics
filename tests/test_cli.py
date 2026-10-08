@@ -1,109 +1,74 @@
-"""Tests for the TAPS command-line interface."""
+"""Tests for the standalone pythomics command-line interface."""
 
-import logging
+import numpy as np
+import pytest
+import skimage.io
 
-from taps import cli
-from taps.inference import BlankMaskError
-
-
-def test_segment_command_delegates_to_library(monkeypatch, caplog):
-    """The CLI passes parsed segment arguments to the inference API."""
-    caplog.set_level(logging.INFO)
-    calls = []
-
-    def fake_segment(image, output, checkpoint, device, exact, **kwargs):
-        calls.append(
-            (
-                image,
-                output,
-                checkpoint,
-                device,
-                exact,
-                kwargs["sigma"],
-                kwargs["threshold"],
-            )
-        )
-        return output
-
-    monkeypatch.setattr(cli, "segment", fake_segment)
-
-    exit_code = cli.main(
-        [
-            "segment",
-            "scan.nii.gz",
-            "mask.nii.gz",
-            "--checkpoint",
-            "model.pth",
-            "--device",
-            "cpu",
-        ]
-    )
-
-    assert exit_code == 0
-    assert calls == [
-        ("scan.nii.gz", "mask.nii.gz", "model.pth", "cpu", False, 2.5, 0.55)
-    ]
-    assert "Saved segmentation to mask.nii.gz" in caplog.text
+from pythomics import cli
 
 
-def test_segment_command_uses_bundled_checkpoint_by_default(monkeypatch, caplog):
-    """The CLI should use the packaged checkpoint when no override is provided."""
-    caplog.set_level(logging.INFO)
-    calls = []
-
-    def fake_segment(image, output, checkpoint, device, exact, **kwargs):
-        calls.append(
-            (
-                image,
-                output,
-                checkpoint,
-                device,
-                exact,
-                kwargs["sigma"],
-                kwargs["threshold"],
-            )
-        )
-        return output
-
-    monkeypatch.setattr(cli, "segment", fake_segment)
-
-    exit_code = cli.main(["segment", "scan.nii.gz", "mask.nii.gz", "--device", "cpu"])
-
-    assert exit_code == 0
-    assert calls == [("scan.nii.gz", "mask.nii.gz", None, "cpu", False, 2.5, 0.55)]
-    assert "Saved segmentation to mask.nii.gz" in caplog.text
-
-
-def test_segment_command_allows_bundled_checkpoint_by_default():
-    """The CLI should not require an explicit checkpoint path for the packaged model."""
-    parser = cli.build_parser()
-
-    args = parser.parse_args(["segment", "scan.nii.gz", "mask.nii.gz"])
-
-    assert args.image == "scan.nii.gz"
-    assert args.output == "mask.nii.gz"
-    assert args.checkpoint is None
-    assert args.exact is False
-
-
-def test_segment_command_accepts_exact_flag():
-    """The exact flag is exposed on the segment subcommand."""
+def test_build_parser_exposes_defaults_and_label_overrides():
     args = cli.build_parser().parse_args(
-        ["segment", "scan.nii.gz", "mask.nii.gz", "--exact"]
+        ["labels.png", "--block-size", "2", "3", "--epithelium-label", "7"]
     )
 
-    assert args.exact is True
+    assert args.label_map.name == "labels.png"
+    assert args.output_dir.name == "pythomics-output"
+    assert args.min_area == 16
+    assert args.block_size == [2, 3]
+    assert args.epithelium_label == 7
+    assert args.save_mat is False
 
 
-def test_segment_command_returns_one_for_blank_mask(monkeypatch, caplog):
-    """The CLI returns failure when inference produces a blank mask."""
+def test_main_writes_feature_outputs_for_input_image(tmp_path):
+    image = tmp_path / "labels.png"
+    labels = np.zeros((4, 4), dtype=np.uint8)
+    labels[0:2, 0:2] = 1
+    labels[2:4, 2:4] = 2
+    skimage.io.imsave(image, labels, check_contrast=False)
+    output = tmp_path / "features"
 
-    def fake_segment(image, output, checkpoint, device, exact, **kwargs):
-        raise BlankMaskError("Inferred segmentation mask is blank: mask.nii.gz")
+    assert cli.main(
+        [
+            str(image),
+            "--output-dir",
+            str(output),
+            "--min-area",
+            "1",
+            "--block-size",
+            "2",
+            "2",
+            "--save-mat",
+        ]
+    ) == 0
 
-    monkeypatch.setattr(cli, "segment", fake_segment)
+    assert (output / "labels_lumen_features.csv").is_file()
+    assert (output / "labels_epithelium_features.csv").is_file()
+    assert (output / "labels_densities.npz").is_file()
+    assert (output / "labels_features.mat").is_file()
 
-    exit_code = cli.main(["segment", "scan.nii.gz", "mask.nii.gz"])
 
-    assert exit_code == 1
-    assert "Inferred segmentation mask is blank" in caplog.text
+@pytest.mark.parametrize(
+    ("extra_args", "message"),
+    [
+        (["--min-area", "-1"], "--min-area must be non-negative"),
+        (["--block-size", "0", "2"], "--min-area must be non-negative"),
+        (["--block-size", "2", "-1"], "--min-area must be non-negative"),
+        (["--lumen-label", "2"], "label values must be distinct"),
+    ],
+)
+def test_main_rejects_invalid_options(tmp_path, extra_args, message):
+    image = tmp_path / "labels.png"
+    skimage.io.imsave(image, np.zeros((2, 2), dtype=np.uint8), check_contrast=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([str(image), *extra_args])
+
+    assert exc_info.value.code == 2
+
+
+def test_main_rejects_missing_input_file(tmp_path):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([str(tmp_path / "missing.tif")])
+
+    assert exc_info.value.code == 2
