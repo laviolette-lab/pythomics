@@ -32,6 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov", "coverage[toml]>=6.2"]
+visualization = ["glymur", "matplotlib"]
 
 [project.scripts]
 pythomics = "pythomics.cli:main"

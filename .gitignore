@@ -78,4 +78,6 @@ dmypy.json
 # Misc
 *.bak
 *.tmp
->>>>>>> 70a951a (init commit)
+*.ipynb
+!visualize_outputs.ipynb
+/outputs/
