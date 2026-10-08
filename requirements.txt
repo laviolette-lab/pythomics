@@ -1,2 +1,4 @@
-ipykernel
-# Add your runtime dependencies here, one per line.
+numpy
+pandas
+scipy
+scikit-image
