@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
   "numpy",
   "pandas",
+  "pyarrow",
   "scipy",
   "scikit-image",
 ]

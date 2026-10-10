@@ -214,8 +214,8 @@ def test_save_outputs_writes_csv_density_and_optional_mat_files(tmp_path):
     )
 
     output = tmp_path / "csv-output"
-    assert pd.read_csv(output / "sample_lumen_features.csv")["area"].tolist() == [4]
-    assert pd.read_csv(output / "sample_epithelium_features.csv").empty
+    assert pd.read_parquet(output / "sample_lumen.parquet")["area"].tolist() == [4]
+    assert pd.read_parquet(output / "sample_epithelium.parquet").empty
     with np.load(output / "sample_densities.npz") as saved:
         np.testing.assert_array_equal(
             saved["lumen_density"], densities["lumen_density"]
@@ -235,6 +235,6 @@ def test_save_outputs_writes_csv_density_and_optional_mat_files(tmp_path):
     maps = scipy.io.loadmat(tmp_path / "mat-output" / "sample_features.mat")
     np.testing.assert_array_equal(
         maps["lumen_area"],
-        np.array([[4, 4, 0, 0], [4, 4, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]),
+        np.array([[4, 0], [0, 0]]),
     )
     np.testing.assert_array_equal(maps["lumen_density"], densities["lumen_density"])

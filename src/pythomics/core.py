@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,11 @@ DEFAULT_LABELS = {
     "stromal_cells": 6,
 }
 DEFAULT_MIN_AREA = 2048
+MAX_DEFAULT_JOBS = 12
+
+
+def _default_job_count() -> int:
+    return min(MAX_DEFAULT_JOBS, os.cpu_count() or 1)
 
 
 def load_label_map(path: str | Path) -> np.ndarray:
@@ -85,6 +92,28 @@ def average_thickness(region_mask: np.ndarray) -> float:
     return float(area / length) if length else 0.0
 
 
+def _thickness_of_mask(mask: np.ndarray) -> float:
+    return average_thickness(mask)
+
+
+def _parallel_thickness(
+    labeled: np.ndarray, label_ids: np.ndarray, n_jobs: int | None
+) -> np.ndarray:
+    """Average thickness per label, computed on bounding-box crops across processes."""
+    slices = scipy.ndimage.find_objects(labeled)
+    masks = [labeled[slices[i - 1]] == i for i in label_ids]
+    workers = n_jobs if n_jobs is not None else _default_job_count()
+    if workers <= 1 or len(masks) < 2:
+        return np.array([_thickness_of_mask(m) for m in masks], dtype=np.float64)
+    chunk = max(1, len(masks) // (workers * 4))
+    with ProcessPoolExecutor(max_workers=min(workers, len(masks))) as pool:
+        return np.fromiter(
+            pool.map(_thickness_of_mask, masks, chunksize=chunk),
+            dtype=np.float64,
+            count=len(masks),
+        )
+
+
 def _empty(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns)
 
@@ -111,6 +140,7 @@ def calculate_epithelium_features(
     labeled_epithelium: np.ndarray,
     epithelial_cells: np.ndarray,
     min_area: int = DEFAULT_MIN_AREA,
+    n_jobs: int | None = None,
 ) -> pd.DataFrame:
     columns = ["label", "area", "roundness", "average_thickness", "cell_fraction"]
     if not np.any(labeled_epithelium):
@@ -119,15 +149,18 @@ def calculate_epithelium_features(
         labeled_epithelium,
         intensity_image=epithelial_cells,
         properties=("label", "area", "perimeter", "intensity_mean"),
-        extra_properties=[average_thickness],
     )
     frame = pd.DataFrame(props)
+    frame = frame.loc[frame.area >= min_area].reset_index(drop=True)
+    frame["average_thickness"] = _parallel_thickness(
+        labeled_epithelium, frame["label"].to_numpy(), n_jobs
+    )
     frame["roundness"] = [
         calculate_tortuosity(a, p)
         for a, p in zip(frame.area, frame.perimeter, strict=False)
     ]
     frame["cell_fraction"] = frame["intensity_mean"]
-    frame = frame.loc[frame.area >= min_area, columns]
+    frame = frame[columns]
     return frame.reset_index(drop=True)
 
 
@@ -136,6 +169,7 @@ def extract_features(
     labels: Mapping[str, int] | None = None,
     min_area: int = DEFAULT_MIN_AREA,
     block_size: tuple[int, int] = (20, 20),
+    n_jobs: int | None = None,
 ) -> tuple[dict[str, np.ndarray], pd.DataFrame, pd.DataFrame]:
     """Calculate density maps and per-object lumen/epithelium measurements.
 
@@ -171,7 +205,7 @@ def extract_features(
     labeled_epithelium = scipy.ndimage.label(epithelium)[0]
     lumen_features = calculate_lumen_features(labeled_lumen, min_area)
     epithelium_features = calculate_epithelium_features(
-        labeled_epithelium, epithelial_cells, min_area
+        labeled_epithelium, epithelial_cells, min_area, n_jobs
     )
     logging.info(
         "Found %d lumens and %d epithelial regions",
@@ -197,6 +231,59 @@ def _paint_features(
     return lookup[labeled]
 
 
+def _block_max(image: np.ndarray, block_size: tuple[int, int]) -> np.ndarray:
+    bh, bw = block_size
+    columns = np.maximum.reduceat(image, np.arange(0, image.shape[1], bw), axis=1)
+    return np.maximum.reduceat(columns, np.arange(0, image.shape[0], bh), axis=0)
+
+
+def write_mat(
+    label_map: np.ndarray,
+    lumen_features: pd.DataFrame,
+    epithelium_features: pd.DataFrame,
+    path: str | Path,
+    labels: Mapping[str, int] | None = None,
+    block_size: tuple[int, int] = (20, 20),
+    full_resolution: bool = False,
+) -> None:
+    """Write a MAT feature map from a label map and per-object feature tables.
+
+    Maps are at density resolution (one value per block, the block maximum for
+    per-object features) unless ``full_resolution`` is set.
+    """
+    values = dict(DEFAULT_LABELS)
+    if labels:
+        values.update(labels)
+    lumen = label_map == values["lumen"]
+    epithelial_cells = label_map == values["epithelial_cells"]
+    epithelium = (label_map == values["epithelium"]) | epithelial_cells
+    stroma = (label_map == values["stroma"]) | (label_map == values["stromal_cells"])
+    labeled_lumen = scipy.ndimage.label(lumen)[0]
+    labeled_epithelium = scipy.ndimage.label(epithelium)[0]
+    maps = {
+        "lumen_density": summify(lumen, block_size),
+        "stroma_density": summify(stroma, block_size),
+        "epithelium_density": summify(epithelium, block_size),
+        "epithelial_cells_density": summify(epithelial_cells, block_size),
+    }
+    painted = {
+        "lumen_roundness": (labeled_lumen, lumen_features, "roundness"),
+        "lumen_area": (labeled_lumen, lumen_features, "area"),
+        "epithelium_roundness": (labeled_epithelium, epithelium_features, "roundness"),
+        "epithelium_area": (labeled_epithelium, epithelium_features, "area"),
+        "epithelium_thickness": (
+            labeled_epithelium,
+            epithelium_features,
+            "average_thickness",
+        ),
+        "cell_fraction": (labeled_epithelium, epithelium_features, "cell_fraction"),
+    }
+    for key, (labeled, features, column) in painted.items():
+        full = _paint_features(labeled, features, column)
+        maps[key] = full if full_resolution else _block_max(full, block_size)
+    scipy.io.savemat(path, maps)
+
+
 def save_outputs(
     label_map: np.ndarray,
     densities: Mapping[str, np.ndarray],
@@ -207,48 +294,21 @@ def save_outputs(
     save_mat: bool = False,
     labels: Mapping[str, int] | None = None,
     block_size: tuple[int, int] = (20, 20),
+    full_resolution_mat: bool = False,
 ) -> None:
-    """Write per-object CSV tables, density arrays, and optionally a MAT feature map."""
+    """Write per-object Parquet tables, density arrays, and optionally a MAT map."""
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    lumen_features.to_csv(output / f"{stem}_lumen_features.csv", index=False)
-    epithelium_features.to_csv(output / f"{stem}_epithelium_features.csv", index=False)
+    lumen_features.to_parquet(output / f"{stem}_lumen.parquet", index=False)
+    epithelium_features.to_parquet(output / f"{stem}_epithelium.parquet", index=False)
     np.savez_compressed(output / f"{stem}_densities.npz", **densities)
-    if not save_mat:
-        return
-
-    values = dict(DEFAULT_LABELS)
-    if labels:
-        values.update(labels)
-    lumen = label_map == values["lumen"]
-    epithelial_cells = label_map == values["epithelial_cells"]
-    epithelium = (label_map == values["epithelium"]) | epithelial_cells
-    labeled_lumen = scipy.ndimage.label(lumen)[0]
-    labeled_epithelium = scipy.ndimage.label(epithelium)[0]
-    maps = {
-        **{
-            key: summify(mask, block_size)
-            for key, mask in {
-                "lumen_density": lumen,
-                "stroma_density": (label_map == values["stroma"])
-                | (label_map == values["stromal_cells"]),
-                "epithelium_density": epithelium,
-                "epithelial_cells_density": epithelial_cells,
-            }.items()
-        },
-        "lumen_roundness": _paint_features(labeled_lumen, lumen_features, "roundness"),
-        "lumen_area": _paint_features(labeled_lumen, lumen_features, "area"),
-        "epithelium_roundness": _paint_features(
-            labeled_epithelium, epithelium_features, "roundness"
-        ),
-        "epithelium_area": _paint_features(
-            labeled_epithelium, epithelium_features, "area"
-        ),
-        "epithelium_thickness": _paint_features(
-            labeled_epithelium, epithelium_features, "average_thickness"
-        ),
-        "cell_fraction": _paint_features(
-            labeled_epithelium, epithelium_features, "cell_fraction"
-        ),
-    }
-    scipy.io.savemat(output / f"{stem}_features.mat", maps)
+    if save_mat:
+        write_mat(
+            label_map,
+            lumen_features,
+            epithelium_features,
+            output / f"{stem}_features.mat",
+            labels,
+            block_size,
+            full_resolution_mat,
+        )
