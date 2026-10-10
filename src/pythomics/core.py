@@ -13,6 +13,7 @@ import scipy.ndimage
 import skimage.io
 import skimage.measure
 import skimage.morphology
+from PIL import Image as PILImage
 
 DEFAULT_LABELS = {
     "lumen": 1,
@@ -26,7 +27,12 @@ DEFAULT_MIN_AREA = 2048
 
 def load_label_map(path: str | Path) -> np.ndarray:
     """Read a 2-D label map; RGB representations are accepted only if channels match."""
-    image = np.asarray(skimage.io.imread(str(path)))
+    max_image_pixels = PILImage.MAX_IMAGE_PIXELS
+    PILImage.MAX_IMAGE_PIXELS = None
+    try:
+        image = np.asarray(skimage.io.imread(str(path)))
+    finally:
+        PILImage.MAX_IMAGE_PIXELS = max_image_pixels
     if image.ndim == 3:
         if image.shape[-1] not in (3, 4) or not np.all(
             image[..., :3] == image[..., :1]
