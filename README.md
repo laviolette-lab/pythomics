@@ -10,7 +10,7 @@ From this directory, install the listed dependencies into your environment:
 python -m pip install -r requirements.txt
 ```
 
-Image readers are provided by scikit-image. Object-level tables are Parquet, density arrays are compressed NPZ, and MAT output is optional.
+Image readers are provided by scikit-image. Install `glymur` (`python -m pip install glymur`) to enable multi-threaded JPEG2000 decoding; otherwise JPEG2000 files use the scikit-image reader. Object-level tables are Parquet, density arrays are compressed NPZ, and MAT output is optional.
 
 ## CLI
 
@@ -33,4 +33,4 @@ The default label values are lumen=1, epithelium=2, stroma=4, epithelial-cells=5
 
 Epithelium regions include both epithelium and epithelial-cell pixels. Stroma density includes stromal-cell pixels. Connected components are labeled independently in each tissue mask. Tables contain source-pixel area, circularity (`roundness`), and for epithelium average skeleton thickness and epithelial-cell fraction. Density NPZ arrays are block sums, with edge blocks padded with zeros. MAT density maps are block sums; per-object maps at density resolution are pixel-area-weighted means of the feature values for included objects in each block, excluding background and regions filtered out by `--min-area`. `--save-full-mat` writes those per-object maps at source-pixel resolution instead.
 
-Outputs are `<input-stem>_lumen.parquet`, `<input-stem>_epithelium.parquet`, and `<input-stem>_densities.npz`; with `--save-mat`, also `<input-stem>_features.mat` at density (block) resolution, or full resolution with `--save-full-mat`. To build a MAT file from an existing label map and tables, pass `--lumen-parquet` and `--epithelium-parquet`. `-j/--jobs` sets worker threads for large-image mask, density, component-labeling, and feature-map calculations (default: up to 12 CPUs); specify a higher value to use more.
+Outputs are `<input-stem>_lumen.parquet`, `<input-stem>_epithelium.parquet`, and `<input-stem>_densities.npz`; with `--save-mat`, also `<input-stem>_features.mat` at density (block) resolution, or full resolution with `--save-full-mat`. To build a MAT file from an existing label map and tables, pass `--lumen-parquet` and `--epithelium-parquet`. `-j/--jobs` sets worker threads for JPEG2000 decoding and large-image mask, density, component-labeling, and feature-map calculations (default: up to 12 CPUs); specify a higher value to use more.

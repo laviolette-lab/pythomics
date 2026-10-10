@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from itertools import pairwise
 from pathlib import Path
 from typing import cast
@@ -33,6 +33,7 @@ PARALLEL_LABEL_PIXEL_THRESHOLD = 4_000_000
 PARALLEL_HISTOGRAM_MEMORY_BYTES = 128 * 1024 * 1024
 LABEL_CHUNK_ROWS = 512
 MAT_CHUNK_BLOCK_ROWS = 32
+PARALLEL_CHUNKS_PER_WORKER = 2
 
 
 def _default_job_count() -> int:
@@ -56,6 +57,13 @@ def _make_tissue_mask(
     return name, mask
 
 
+def _make_tissue_mask_chunk(
+    task: tuple[np.ndarray, np.ndarray, str, Mapping[str, int]],
+) -> None:
+    palette, output, name, labels = task
+    output[:] = _make_tissue_mask((palette, name, labels))[1]
+
+
 def _create_tissue_masks(
     palette: np.ndarray,
     labels: Mapping[str, int],
@@ -70,8 +78,22 @@ def _create_tissue_masks(
     tasks = [(palette, name, labels) for name in names]
     workers = n_jobs if n_jobs is not None else _default_job_count()
     if workers > 1 and palette.size >= PARALLEL_LABEL_PIXEL_THRESHOLD:
-        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-            return dict(pool.map(_make_tissue_mask, tasks))
+        outputs = {name: np.empty(palette.shape, dtype=np.bool_) for name in names}
+        chunk_count = min(workers * PARALLEL_CHUNKS_PER_WORKER, palette.shape[0])
+        row_bounds = np.linspace(0, palette.shape[0], chunk_count + 1, dtype=np.int64)
+        chunk_tasks = [
+            (
+                palette[start:stop],
+                outputs[name][start:stop],
+                name,
+                labels,
+            )
+            for name in names
+            for start, stop in pairwise(row_bounds)
+        ]
+        with ThreadPoolExecutor(max_workers=min(workers, len(chunk_tasks))) as pool:
+            list(pool.map(_make_tissue_mask_chunk, chunk_tasks))
+        return outputs
     return dict(map(_make_tissue_mask, tasks))
 
 
@@ -82,6 +104,13 @@ def _summify_item(
     return name, summify(mask, block_size)
 
 
+def _summify_density_chunk(
+    task: tuple[str, np.ndarray, tuple[int, int], int],
+) -> tuple[str, int, np.ndarray]:
+    name, mask, block_size, block_start = task
+    return name, block_start, summify(mask, block_size)
+
+
 def _calculate_densities(
     masks: Mapping[str, np.ndarray],
     block_size: tuple[int, int],
@@ -90,8 +119,33 @@ def _calculate_densities(
     tasks = [(f"{name}_density", mask, block_size) for name, mask in masks.items()]
     workers = n_jobs if n_jobs is not None else _default_job_count()
     if workers > 1 and tasks[0][1].size >= PARALLEL_LABEL_PIXEL_THRESHOLD:
-        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-            return dict(pool.map(_summify_item, tasks))
+        block_height = block_size[0]
+        block_rows = (tasks[0][1].shape[0] + block_height - 1) // block_height
+        chunk_count = min(workers * PARALLEL_CHUNKS_PER_WORKER, block_rows)
+        block_bounds = np.linspace(0, block_rows, chunk_count + 1, dtype=np.int64)
+        output_shape = (
+            block_rows,
+            (tasks[0][1].shape[1] + block_size[1] - 1) // block_size[1],
+        )
+        outputs = {
+            name: np.empty(output_shape, dtype=np.float32) for name, _, _ in tasks
+        }
+        chunk_tasks = []
+        for name, mask, size in tasks:
+            for block_start, block_stop in pairwise(block_bounds):
+                row_start = int(block_start * block_height)
+                row_stop = min(int(block_stop * block_height), mask.shape[0])
+                chunk_tasks.append(
+                    (name, mask[row_start:row_stop], size, int(block_start))
+                )
+        with ThreadPoolExecutor(max_workers=min(workers, len(chunk_tasks))) as pool:
+            for name, block_start, density_chunk in pool.map(
+                _summify_density_chunk, chunk_tasks
+            ):
+                outputs[name][block_start : block_start + density_chunk.shape[0]] = (
+                    density_chunk
+                )
+        return outputs
     return dict(map(_summify_item, tasks))
 
 
@@ -189,14 +243,36 @@ def _label_components(mask: np.ndarray, n_jobs: int | None = None) -> np.ndarray
     return output
 
 
-def load_label_map(path: str | Path) -> np.ndarray:
-    """Read a 2-D label map; RGB representations are accepted only if channels match."""
+def load_label_map(path: str | Path, n_jobs: int | None = None) -> np.ndarray:
+    """Read a label map, using threaded Glymur/OpenJPEG decoding for JPEG2000."""
+    path = Path(path)
+    workers = n_jobs if n_jobs is not None else _default_job_count()
+    if workers < 1:
+        raise ValueError("n_jobs must be positive")
+    if path.suffix.lower() in {".jp2", ".j2k", ".j2c"}:
+        try:
+            import glymur
+        except ModuleNotFoundError as exc:
+            if exc.name != "glymur":
+                raise
+        else:
+            previous_threads = glymur.get_option("lib.num_threads")
+            try:
+                glymur.set_option("lib.num_threads", workers)
+                image = np.asarray(glymur.Jp2k(path)[:])
+            finally:
+                glymur.set_option("lib.num_threads", previous_threads)
+            return _validate_label_map(image)
     max_image_pixels = PILImage.MAX_IMAGE_PIXELS
     PILImage.MAX_IMAGE_PIXELS = None
     try:
         image = np.asarray(skimage.io.imread(str(path)))
     finally:
         PILImage.MAX_IMAGE_PIXELS = max_image_pixels
+    return _validate_label_map(image)
+
+
+def _validate_label_map(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3:
         if image.shape[-1] not in (3, 4) or not np.all(
             image[..., :3] == image[..., :1]
@@ -518,10 +594,39 @@ def extract_features(
     densities = _calculate_densities(masks, block_size, n_jobs)
     labeled_lumen = _label_components(masks["lumen"], n_jobs)
     labeled_epithelium = _label_components(masks["epithelium"], n_jobs)
-    lumen_features = calculate_lumen_features(labeled_lumen, min_area, n_jobs)
-    epithelium_features = calculate_epithelium_features(
-        labeled_epithelium, masks["epithelial_cells"], min_area, n_jobs
-    )
+    workers = n_jobs if n_jobs is not None else _default_job_count()
+    if workers > 1 and palette.size >= PARALLEL_LABEL_PIXEL_THRESHOLD:
+        lumen_workers = workers // 2
+        epithelium_workers = workers - lumen_workers
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = (
+                pool.submit(
+                    calculate_lumen_features,
+                    labeled_lumen,
+                    min_area,
+                    lumen_workers,
+                ),
+                pool.submit(
+                    calculate_epithelium_features,
+                    labeled_epithelium,
+                    masks["epithelial_cells"],
+                    min_area,
+                    epithelium_workers,
+                ),
+            )
+            wait(futures)
+            errors = [future.exception() for future in futures]
+            errors = [error for error in errors if error is not None]
+            if errors:
+                raise errors[0]
+            lumen_features, epithelium_features = (
+                future.result() for future in futures
+            )
+    else:
+        lumen_features = calculate_lumen_features(labeled_lumen, min_area, n_jobs)
+        epithelium_features = calculate_epithelium_features(
+            labeled_epithelium, masks["epithelial_cells"], min_area, n_jobs
+        )
     logging.info(
         "Found %d lumens and %d epithelial regions",
         len(lumen_features),

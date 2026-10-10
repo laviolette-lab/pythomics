@@ -1,5 +1,8 @@
 """Tests for label-map feature extraction and output generation."""
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -33,6 +36,78 @@ def test_load_label_map_disables_pillow_pixel_limit_during_read(monkeypatch, tmp
 
     np.testing.assert_array_equal(core.load_label_map(tmp_path / "labels.png"), labels)
     assert core.PILImage.MAX_IMAGE_PIXELS == max_image_pixels
+
+
+def test_load_jpeg2000_uses_glymur_threads_and_restores_setting(monkeypatch, tmp_path):
+    labels = np.array([[0, 1], [2, 4]], dtype=np.uint8)
+    thread_count = 2
+    observed = []
+
+    class Reader:
+        def __init__(self, path):
+            assert path == tmp_path / "labels.jp2"
+
+        def __getitem__(self, key):
+            observed.append(thread_count)
+            return labels
+
+    def set_option(name, value):
+        nonlocal thread_count
+        assert name == "lib.num_threads"
+        thread_count = value
+
+    glymur = SimpleNamespace(
+        Jp2k=Reader,
+        get_option=lambda name: thread_count,
+        set_option=set_option,
+    )
+    monkeypatch.setitem(sys.modules, "glymur", glymur)
+
+    actual = core.load_label_map(tmp_path / "labels.jp2", n_jobs=7)
+
+    np.testing.assert_array_equal(actual, labels)
+    assert observed == [7]
+    assert thread_count == 2
+
+
+def test_load_jpeg2000_restores_glymur_setting_after_decode_error(
+    monkeypatch, tmp_path
+):
+    thread_count = 2
+
+    class Reader:
+        def __getitem__(self, key):
+            raise OSError("decode failed")
+
+    def set_option(name, value):
+        nonlocal thread_count
+        thread_count = value
+
+    glymur = SimpleNamespace(
+        Jp2k=lambda _: Reader(),
+        get_option=lambda _: thread_count,
+        set_option=set_option,
+    )
+    monkeypatch.setitem(sys.modules, "glymur", glymur)
+
+    with pytest.raises(OSError, match="decode failed"):
+        core.load_label_map(tmp_path / "labels.jp2", n_jobs=7)
+    assert thread_count == 2
+
+
+def test_load_jpeg2000_falls_back_when_glymur_is_unavailable(monkeypatch, tmp_path):
+    labels = np.array([[0, 1], [2, 4]], dtype=np.uint8)
+    monkeypatch.setitem(sys.modules, "glymur", None)
+    monkeypatch.setattr(core.skimage.io, "imread", lambda _: labels)
+
+    np.testing.assert_array_equal(
+        core.load_label_map(tmp_path / "labels.jp2", n_jobs=1), labels
+    )
+
+
+def test_load_label_map_rejects_nonpositive_worker_count(tmp_path):
+    with pytest.raises(ValueError, match="n_jobs must be positive"):
+        core.load_label_map(tmp_path / "labels.jp2", n_jobs=0)
 
 
 def test_load_label_map_restores_pillow_pixel_limit_after_read_error(
@@ -94,6 +169,26 @@ def test_summify_empty_image_returns_empty_float_array():
 
     assert result.shape == (0, 0)
     assert result.dtype == np.float32
+
+
+def test_chunked_masks_and_densities_match_single_pass(monkeypatch):
+    labels = np.tile(np.array([0, 1, 2, 4, 5, 6, 7, 8], dtype=np.uint8), (17, 3))[
+        :, :19
+    ]
+    monkeypatch.setattr(core, "PARALLEL_LABEL_PIXEL_THRESHOLD", 0)
+
+    serial_masks = core._create_tissue_masks(labels, core.DEFAULT_LABELS, n_jobs=1)
+    parallel_masks = core._create_tissue_masks(labels, core.DEFAULT_LABELS, n_jobs=3)
+    for name in serial_masks:
+        np.testing.assert_array_equal(parallel_masks[name], serial_masks[name])
+
+    expected = {
+        f"{name}_density": core.summify(mask, block_size=(4, 5))
+        for name, mask in serial_masks.items()
+    }
+    actual = core._calculate_densities(parallel_masks, (4, 5), n_jobs=3)
+    for name in expected:
+        np.testing.assert_array_equal(actual[name], expected[name])
 
 
 @pytest.mark.parametrize(

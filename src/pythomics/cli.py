@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("--jobs must be positive")
     block_size = tuple(args.block_size)
 
-    label_map = load_label_map(args.label_map)
+    label_map = load_label_map(args.label_map, n_jobs=args.jobs)
     if all(parquets):
         for path in parquets:
             if not path.is_file():
