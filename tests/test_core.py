@@ -31,9 +31,7 @@ def test_load_label_map_disables_pillow_pixel_limit_during_read(monkeypatch, tmp
 
     monkeypatch.setattr(core.skimage.io, "imread", imread)
 
-    np.testing.assert_array_equal(
-        core.load_label_map(tmp_path / "labels.png"), labels
-    )
+    np.testing.assert_array_equal(core.load_label_map(tmp_path / "labels.png"), labels)
     assert core.PILImage.MAX_IMAGE_PIXELS == max_image_pixels
 
 

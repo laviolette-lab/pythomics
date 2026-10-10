@@ -8,12 +8,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PIL import Image as PILImage
 import scipy.io
 import scipy.ndimage
 import skimage.io
 import skimage.measure
 import skimage.morphology
+from PIL import Image as PILImage
 
 DEFAULT_LABELS = {
     "lumen": 1,
