@@ -21,6 +21,38 @@ def test_load_label_map_accepts_grayscale_and_matching_rgb(monkeypatch, tmp_path
     np.testing.assert_array_equal(core.load_label_map(path), labels)
 
 
+def test_load_label_map_disables_pillow_pixel_limit_during_read(monkeypatch, tmp_path):
+    labels = np.array([[0, 1], [2, 4]], dtype=np.uint8)
+    max_image_pixels = core.PILImage.MAX_IMAGE_PIXELS
+
+    def imread(_):
+        assert core.PILImage.MAX_IMAGE_PIXELS is None
+        return labels
+
+    monkeypatch.setattr(core.skimage.io, "imread", imread)
+
+    np.testing.assert_array_equal(
+        core.load_label_map(tmp_path / "labels.png"), labels
+    )
+    assert core.PILImage.MAX_IMAGE_PIXELS == max_image_pixels
+
+
+def test_load_label_map_restores_pillow_pixel_limit_after_read_error(
+    monkeypatch, tmp_path
+):
+    max_image_pixels = core.PILImage.MAX_IMAGE_PIXELS
+
+    def imread(_):
+        assert core.PILImage.MAX_IMAGE_PIXELS is None
+        raise OSError("could not read image")
+
+    monkeypatch.setattr(core.skimage.io, "imread", imread)
+
+    with pytest.raises(OSError, match="could not read image"):
+        core.load_label_map(tmp_path / "labels.png")
+    assert core.PILImage.MAX_IMAGE_PIXELS == max_image_pixels
+
+
 @pytest.mark.parametrize(
     ("image", "message"),
     [
