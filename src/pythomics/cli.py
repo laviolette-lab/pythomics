@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=int,
         default=_default_job_count(),
-        help="Worker processes for per-region calculations (default: up to 12 CPUs)",
+        help="Worker threads for large-image calculations (default: up to 12 CPUs)",
     )
     parser.add_argument(
         "--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO"
@@ -117,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             labels=labels,
             block_size=block_size,
             full_resolution=args.save_full_mat,
+            n_jobs=args.jobs,
         )
         logging.info("Wrote MAT file to %s", args.output_dir)
         return 0
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         labels=labels,
         block_size=block_size,
         full_resolution_mat=args.save_full_mat,
+        n_jobs=args.jobs,
     )
     logging.info("Wrote outputs to %s", args.output_dir)
     return 0

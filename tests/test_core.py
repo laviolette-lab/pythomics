@@ -137,6 +137,61 @@ def test_extract_features_counts_combined_tissues_and_calculates_objects():
     assert epithelium["average_thickness"].iloc[0] > 0
 
 
+def test_region_area_filtering_keeps_original_labels():
+    labeled = np.zeros((4, 6), dtype=np.int32)
+    labeled[0, 0] = 1
+    labeled[2:4, 3:5] = 2
+
+    features = core.calculate_lumen_features(labeled, min_area=2, n_jobs=1)
+
+    assert features[["label", "area"]].to_dict("records") == [{"label": 2, "area": 4}]
+
+
+def test_parallel_region_measurements_match_serial(monkeypatch):
+    labels = np.zeros((12, 20), dtype=np.uint8)
+    labels[1:4, 1:5] = 1
+    labels[7:10, 1:5] = 1
+    labels[1:4, 11:15] = 2
+    labels[7:10, 11:15] = 2
+    labels[2, 12] = 5
+    labels[8, 13] = 5
+    monkeypatch.setattr(core, "PARALLEL_REGION_AREA_THRESHOLD", 0)
+    monkeypatch.setattr(core, "PARALLEL_LABEL_PIXEL_THRESHOLD", 0)
+    monkeypatch.setattr(core, "LABEL_CHUNK_ROWS", 3)
+
+    serial = core.extract_features(labels, min_area=1, n_jobs=1)
+    parallel = core.extract_features(labels, min_area=1, n_jobs=2)
+
+    for name in serial[0]:
+        np.testing.assert_array_equal(serial[0][name], parallel[0][name])
+    for serial_frame, parallel_frame in zip(serial[1:], parallel[1:], strict=True):
+        pd.testing.assert_frame_equal(serial_frame, parallel_frame)
+
+
+def test_parallel_component_labels_match_serial_across_chunk_boundaries(monkeypatch):
+    mask = np.zeros((11, 12), dtype=bool)
+    mask[1:9, 2] = True
+    mask[2:5, 7] = True
+    mask[5, 8] = True
+    mask[6, 9] = True
+    mask[10, 10] = True
+    monkeypatch.setattr(core, "PARALLEL_LABEL_PIXEL_THRESHOLD", 0)
+    monkeypatch.setattr(core, "LABEL_CHUNK_ROWS", 3)
+
+    serial = core.scipy.ndimage.label(mask)[0]
+    parallel = core._label_components(mask, n_jobs=3)
+
+    np.testing.assert_array_equal(parallel, serial)
+
+
+def test_component_label_compaction_resolves_transitive_merges():
+    parent = np.array([0, 1, 1, 2, 3, 4], dtype=np.int32)
+
+    lookup = core._compact_component_labels(parent)
+
+    np.testing.assert_array_equal(lookup, [0, 1, 1, 1, 1, 1])
+
+
 def test_extract_features_filters_small_regions_and_returns_empty_tables():
     labels = np.zeros((5, 5), dtype=np.uint8)
     labels[0, 0] = 1
@@ -191,19 +246,55 @@ def test_paint_features_projects_region_values_and_validates_column():
     features = pd.DataFrame({"label": [1], "area": [3]})
 
     np.testing.assert_array_equal(
-        core._paint_features(labeled, features, "area"), [[0, 3], [0, 0]]
+        core._paint_feature_map(("area", labeled, features, "area", 2, (1, 1), True))[
+            1
+        ],
+        [[0, 3], [0, 0]],
     )
     with pytest.raises(ValueError, match="not found"):
-        core._paint_features(labeled, features, "missing")
+        core._paint_feature_map(
+            ("missing", labeled, features, "missing", 2, (1, 1), True)
+        )
 
 
-def test_save_outputs_writes_csv_density_and_optional_mat_files(tmp_path):
+@pytest.mark.parametrize("column", ["roundness", "average_thickness", "cell_fraction"])
+def test_painted_mat_features_are_area_weighted_means(column, monkeypatch):
+    labeled = np.array([[1, 1, 0, 2, 2, 0], [1, 1, 0, 2, 2, 0]], dtype=np.int32)
+    features = pd.DataFrame(
+        {
+            "label": [1, 2],
+            "roundness": [0.25, 0.75],
+            "average_thickness": [2.0, 6.0],
+            "cell_fraction": [0.2, 0.8],
+        }
+    )
+    monkeypatch.setattr(core, "MAT_CHUNK_BLOCK_ROWS", 1)
+
+    actual = core._paint_feature_map(
+        (column, labeled, features, column, 2, (2, 6), False)
+    )[1]
+    expected = {
+        "roundness": (0.25 * 4 + 0.75 * 4) / 8,
+        "average_thickness": (2.0 * 4 + 6.0 * 4) / 8,
+        "cell_fraction": (0.2 * 4 + 0.8 * 4) / 8,
+    }[column]
+    np.testing.assert_allclose(actual, [[expected]])
+
+
+def test_save_outputs_writes_parquet_density_and_optional_mat_files(
+    tmp_path, monkeypatch
+):
     labels = np.zeros((4, 4), dtype=np.uint8)
     labels[0:2, 0:2] = 1
     densities, lumen, epithelium = core.extract_features(
         labels, min_area=1, block_size=(2, 2)
     )
 
+    monkeypatch.setattr(
+        core,
+        "_calculate_densities",
+        lambda *args: pytest.fail("MAT output should reuse extracted densities"),
+    )
     core.save_outputs(
         labels,
         densities,
@@ -238,3 +329,37 @@ def test_save_outputs_writes_csv_density_and_optional_mat_files(tmp_path):
         np.array([[4, 0], [0, 0]]),
     )
     np.testing.assert_array_equal(maps["lumen_density"], densities["lumen_density"])
+
+
+def test_written_mat_feature_maps_match_feature_tables(tmp_path):
+    labels = np.zeros((8, 16), dtype=np.uint8)
+    labels[0:2, 0:2] = 1
+    labels[0:2, 4:6] = 1
+    labels[4:6, 0:2] = 2
+    labels[4, 0] = 5
+    labels[4:6, 4:6] = 2
+    labels[4, 4:6] = 5
+    block_size = (8, 16)
+    _, lumen, epithelium = core.extract_features(
+        labels, min_area=1, block_size=block_size, n_jobs=1
+    )
+    path = tmp_path / "features.mat"
+
+    core.write_mat(
+        labels,
+        lumen,
+        epithelium,
+        path,
+        block_size=block_size,
+        n_jobs=1,
+    )
+    maps = scipy.io.loadmat(path)
+
+    for map_name, frame, feature in (
+        ("lumen_roundness", lumen, "roundness"),
+        ("epithelium_roundness", epithelium, "roundness"),
+        ("epithelium_thickness", epithelium, "average_thickness"),
+        ("cell_fraction", epithelium, "cell_fraction"),
+    ):
+        expected = np.average(frame[feature], weights=frame["area"])
+        assert maps[map_name].item() == pytest.approx(expected)
